@@ -1,0 +1,464 @@
+---
+title: 
+   <center><h2> Categorise fake news using text classification </h2></center>
+subtitle: 
+   <center><h3> Data mining and Knowledge discovery project work </h3> </center>
+author: 
+  <center><h5> Group- Surya Sumadhuri Damerla,Frederico Santos </h5> </center>
+output: 
+   html_document: 
+    theme: cosmo
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    toc_depth: 4
+    fig_caption: true
+    number_sections: true
+    df_print: paged
+    css: styles.css
+---
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(fig.width=10, fig.height=8, fig.path='Figures/',
+                      echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+## Importing Libraries
+```{r import_libraries}
+library(readr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(tm)       ## For text mining
+library(textstem)     ## For lemmatization
+library(tidytext)
+library(wordcloud2)
+library(pROC)
+library(ROCR)
+library(randomForest)   ## Random forest classification
+library(naivebayes)
+library(caret)
+library(tidyverse)
+library(dplyr)
+library(stringr)
+require(ggExtra) # For marginal graphs
+require(GGally) #for correlation plot
+library(rpart)
+theme_set(theme_light())
+set.seed(123)
+
+```
+
+
+## Loading data
+```{r load_data}
+fake <- read_csv('data/Fake.csv/Fake.csv')
+true <- read_csv('data/True.csv/True.csv')
+```
+
+## View data
+```{r}
+head(fake)
+head(true)
+
+```
+
+##Creating new column
+```{r}
+true$category <- 1
+fake$category <- 0
+
+```
+
+
+## Merging the datasets
+```{r}
+# Merge 2 datasets
+news <- bind_rows(fake, true)
+news %>%
+  sample_n(10)
+glimpse(news)
+
+```
+
+## Tidying data
+```{r}
+summary(news)
+
+
+# Check for misisng values
+summary(is.na(news))
+
+```
+
+
+```{r tidy}
+##change to factor
+news$category <- as.factor(news$category)
+##change data from character to date type
+news$date <- as.Date(news$date,
+  format = "%B %d, %Y")
+head(news$date)
+sapply(news,class)
+```
+
+
+## Exploratory Data Analysis
+```{r}
+ggplot(news, aes(x = category, fill = category)) + 
+    geom_bar() +
+    theme_light() +
+    theme(legend.position = 'none')
+
+```
+
+```{r}
+news %>% group_by(category) %>% summarise(count=n())
+```
+Finding: The dataset looks balanced.
+
+
+
+### News count by subject
+```{r}
+# Change data type of subject to factor
+news$subject <- as.factor(news$subject)
+
+# News count by each Subject
+news %>%
+  group_by(subject) %>%
+  count() %>%
+  arrange(desc(n))
+```
+
+### Bar plot of Subject frequency
+```{r}
+news %>%
+  group_by(subject) %>%
+  count(sort = TRUE) %>%
+  rename(freq = n) %>%
+  ggplot(aes(x = reorder(subject, -freq), y = freq)) + 
+  geom_bar(stat = 'identity', fill = 'lightblue') +
+  theme_light() +
+  xlab('Subject') +
+  ylab('frequency') 
+```
+
+###
+```{r}
+# Category wise subject bar plot
+ggplot(news, aes(x = subject, fill = category)) +
+  geom_bar(position = 'dodge', alpha = 0.6) +
+  theme_light() +
+  theme(axis.title = element_text(face = 'bold', size = 15),
+        axis.text = element_text(size = 10, angle = 30))
+```
+
+
+
+```{r}
+mytext = data_frame(text = news$title) %>% 
+  filter(news$category == 0) %>%
+  unnest_tokens(word, text) %>% 
+  group_by(word) %>% 
+  count(word, sort = TRUE) %>% 
+  mutate(len=nchar(word)) %>% 
+  filter(len>4) 
+
+pl = ggplot(head(mytext,5), aes(x=reorder(word, -n),y=n), fill=category) + 
+  geom_col() + 
+  theme_light() + 
+  theme(axis.title = element_text(face = 'bold', size = 15),
+        axis.text = element_text(size = 15, angle = 30))+
+  ylab("Number of articles") + 
+  xlab("Word") + 
+  ggtitle("Top 5 used words in fake articles")
+pl
+```
+
+
+
+```{r}
+news = news %>% mutate(Group = ifelse(grepl("Trump", news$title)==TRUE | grepl("Donald", news$title)==TRUE,"Trump",
+                                  ifelse(grepl("Hillary", news$title)==TRUE | grepl("Clinton", news$title)==TRUE,"Clinton",
+                                         ifelse(grepl("Barack", news$title)==TRUE | grepl("Obama", news$title)==TRUE,"Obama",
+                                                ifelse(grepl("Vladimir", news$title)==TRUE | grepl("Putin", news$title)==TRUE,"Putin",ifelse(grepl("Russia", news$title)==TRUE,"Russia",0))))))
+
+#Number of posts split by type
+data = news %>% filter(Group == 'Clinton' | Group == 'Trump' | Group == 'Obama' | Group == 'Putin') %>% 
+  group_by(category,Group) %>% count(Group) %>% filter(category!='bs')
+
+p = ggplot(data, aes(x=reorder(category, n), y=n, fill = Group)) + 
+  geom_col() + 
+  facet_wrap(~Group, ncol = 2, scales = "free") + 
+  theme_light() + 
+  theme(axis.title = element_text(face = 'bold', size = 15),
+        axis.text = element_text(size = 10, angle = 30))+
+  ylab("Number of posts") + 
+  xlab("Type of post") + 
+  coord_flip()
+p
+
+```
+
+
+# Combine title and text column
+```{r}
+news <- news %>% 
+  select(title, text, category,subject) %>%
+  unite(col = text ,title, text, sep = ' ')  %>%  # Combine 'title' & 'text' column
+  mutate(ID = as.character(1:nrow(news)))    # Uniqe row ID for furt
+glimpse(news)
+```
+
+```{r}
+# Create a corpus (type of object expected by tm)
+doc <- VCorpus(VectorSource(news$text))
+
+```
+
+## Data Cleaning
+```{r}
+# Convert text to lower case
+doc <- tm_map(doc, content_transformer(tolower))
+
+# Remove numbers
+doc <- tm_map(doc, removeNumbers)
+
+# Remove Punctuations
+doc <- tm_map(doc, removePunctuation)
+
+# Remove Stopwords
+doc <- tm_map(doc, removeWords, stopwords('english'))
+
+# Remove Whitespace
+doc <- tm_map(doc, stripWhitespace)
+# inspect output
+writeLines(as.character(doc[[45]]))
+
+#It seems all the punctuations aren't removed.
+
+doc <- tm_map(doc, content_transformer(str_remove_all), "[[:punct:]]")
+writeLines(as.character(doc[[45]]))
+writeLines(as.character(doc[[50]]))
+
+```
+
+```{r}
+# Lemmatization
+doc <- tm_map(doc, content_transformer(lemmatize_strings))
+# Create Document Term Matrix
+dtm <- DocumentTermMatrix(doc)
+inspect(dtm)
+
+# remove all terms whose sparsity is greater than the threshold (x)
+dtm.clean <- removeSparseTerms(dtm, sparse = 0.99)
+inspect(dtm.clean)
+```
+
+```{r}
+# Create Tidy data
+df.tidy <- tidy(dtm.clean)
+df.word<- df.tidy %>% 
+    select(-document) %>%
+    group_by(term) %>%
+    summarize(freq = sum(count)) %>%
+    arrange(desc(freq))
+
+# Word cloud
+set.seed(1234) # for reproducibility 
+wordcloud2(data=df.word, size=1.6)
+```
+
+```{r}
+# Word cloud for the fake news
+set.seed(1234)
+df.tidy %>% 
+    inner_join(news, by = c('document' = 'ID')) %>% 
+    select(-text) %>%
+    group_by(term, category) %>%
+    summarize(freq = sum(count)) %>%
+    filter(category == 0) %>%
+    select(-category) %>%
+    arrange(desc(freq)) %>%
+    wordcloud2(size = 1.4,  color='random-dark')
+```
+
+
+```{r}
+# Word cloud for the true news
+set.seed(1234)
+df.tidy %>% 
+    inner_join(news, by = c('document' = 'ID')) %>% 
+    select(-text) %>%
+    group_by(term, category) %>%
+    summarize(freq = sum(count)) %>%
+    filter(category == 1) %>%
+    select(-category) %>%
+    arrange(desc(freq)) %>%
+    wordcloud2(size = 1.6,  color='random-dark')
+
+```
+
+```{r}
+# Convert dtm to matrix
+news.mat <- as.matrix(dtm.clean)
+dim(news.mat)
+
+  news.mat <- cbind(news.mat, category = news$category)
+news.mat[1:10, c(1, 2, 3, ncol(news.mat))]
+```
+Here first 10 observations for category are 1 whereas in news data initial observations are 0 (fake news).
+
+```{r}
+summary(news.mat[,'category'])
+```
+From summary minimum value of category is 1 and maximum value of category is 2. There might be chance that 0 & 1 are replaced by 1 & 2 respectively.
+
+```{r}
+# Convert matrix to data frame
+news.df <- as.data.frame(news.mat)
+
+# Replace valuees in category by original values (1 by 0 & 2 by 1)
+news.df$category <- ifelse(news.df$category == 2, 1, 0)
+news.df$category <- as.factor(news.df$category)
+table(news.df$category)
+
+```
+
+##Splitting Data into Train & Test Sets
+```{r}
+# Splitting our dataset into two datasets i.e. train(70) and test(30) split
+set.seed(1234)
+index <- sample(nrow(news.df), nrow(news.df)*0.75, replace = FALSE)
+
+train_news <- news.df[index,]
+test_news <- news.df[-index,]
+
+# make column names to follow R's variable naming convention
+names(train_news) <- make.names(names(train_news))
+names(test_news) <- make.names(names(test_news))
+
+table(train_news$category)
+table(test_news$category)
+
+```
+Both Train & Test sets are balanced
+
+## Training Model
+### Naive Bayes Model
+```{r}
+# Naive Bayes Model
+model_nb <- naive_bayes(category ~ ., data = train_news)
+
+# Model Summary
+summary(model_nb)
+```
+
+
+### Random Forest Model
+```{r}
+k <- round(sqrt(ncol(train_news)-1))
+model_rf <- randomForest(formula = category ~ ., 
+                       data = train_news,
+                       ntree = 100,
+                       mtry = k,
+                       method = 'class')
+summary(model_rf)
+
+```
+
+## Model Analysis
+
+```{r}
+#Predicted values
+train_news$pred_nb <- predict(model_nb, type = 'class')
+train_news$pred_rf <- predict(model_rf, type = 'response')
+```
+
+```{r}
+# Predicted Values for test set
+test_news$pred_nb <- predict(model_nb, newdata = test_news)
+test_news$pred_rf <- predict(model_rf, newdata = test_news, type = 'response')
+```
+
+
+```{r}
+# Plot ROC Curve for train set
+prediction(as.numeric(train_news$pred_nb), as.numeric(train_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(col = 'blue', lwd = 2)
+
+prediction(as.numeric(train_news$pred_rf), as.numeric(train_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(add = TRUE, col = 'green', lwd = 2)
+
+legend(0.8, 0.2, legend=c("NB", "RF"),
+       col=c("blue", 'green'), lty = 1, cex = 1.2, box.lty = 0)
+
+```
+
+```{r}
+# Plot ROC Curve for test set
+prediction(as.numeric(test_news$pred_nb), as.numeric(test_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(col = 'blue', lwd = 2)
+
+prediction(as.numeric(test_news$pred_rf), as.numeric(test_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(add = TRUE, col = 'green', lwd = 2)
+
+legend(0.8, 0.2, legend=c("NB", "RF"),
+       col=c("blue", 'green'), lty = 1, cex = 1.2, box.lty = 0)
+```
+On Validation set, Random Forest model slightly outperform Logistic Regression Model.
+
+
+# Confussion Matrix
+```{r}
+conf_nb <- caret::confusionMatrix(test_news$category, test_news$pred_nb)
+conf_rf <- caret::confusionMatrix(test_news$category, test_news$pred_rf)
+```
+
+# Heatmap of Confusion Matrix
+```{r}
+bind_rows(as.data.frame(conf_nb$table), as.data.frame(conf_rf$table)) %>% 
+  mutate(Model = rep(c('Naive Bayes', 'Random Forest'), each = 4)) %>%
+  ggplot(aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  labs(x = 'Actual', y = 'Predicted') +
+  scale_fill_gradient(low = "#FFFFF1", high = "#FF8c00") +
+  scale_x_discrete(limits = c('1', '0'), labels = c('1' = 'Not Fake', '0' = 'Fake')) +
+  scale_y_discrete(labels = c('1' = 'Not Fake', '0' = 'Fake')) +
+  facet_grid(. ~ Model) +
+  geom_text(aes(label = Freq), fontface = 'bold') +
+  theme(panel.background = element_blank(),
+        legend.position = 'none',
+        axis.line = element_line(colour = "black"),
+        axis.title = element_text(size = 14, face = 'bold'),
+        axis.text = element_text(size = 11, face = 'bold'),
+        axis.text.y = element_text(angle = 90, hjust = 0.5),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12, face = 'bold'))
+
+```
+
+
+```{r}
+acc <- c(nb = conf_nb[['overall']]['Accuracy'], 
+         rf = conf_rf[['overall']]['Accuracy'])
+precision <- c(nb = conf_nb[['byClass']]['Pos Pred Value'], 
+               rf = conf_rf[['byClass']]['Pos Pred Value'])
+recall <- c(nb = conf_nb[['byClass']]['Sensitivity'], 
+            rf = conf_rf[['byClass']]['Sensitivity'])
+
+
+data.frame(Model = c('Naive Bayes', 'Random Forest'),
+           Accuracy = acc,
+           Precision = precision,
+           Recall = recall,
+           F1_Score = (2 * precision * recall) / (precision + recall),
+           row.names = NULL)
+```
